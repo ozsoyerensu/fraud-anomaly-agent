@@ -4,9 +4,7 @@ import joblib
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from features import add_features 
-
-FEATURES = ["amount", "oldbalanceOrg", "errorBalanceOrig", "errorBalanceDest"]
+from features import add_features, FEATURES
 
 @dataclass 
 class Case:

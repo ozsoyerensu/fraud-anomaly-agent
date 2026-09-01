@@ -4,9 +4,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import classification_report, confusion_matrix
 
-from features import add_features
-
-FEATURES = ["amount", "oldbalanceOrg", "errorBalanceOrig", "errorBalanceDest"]
+from features import add_features, FEATURES
 
 def load_risky_transactions():
     df = pd.read_csv("data/PS_20174392719_1491204439457_log.csv")
