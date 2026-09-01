@@ -1,4 +1,5 @@
 import pandas as pd
+import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import classification_report, confusion_matrix
@@ -55,3 +56,6 @@ flagged = (anomaly_score >= cutoff).astype(int)
 
 print(f"\nFlagging the top 1% most suspicious transactions: {flagged.sum()} of them):")
 print(classification_report(y_test, flagged, digits=3))
+
+joblib.dump(model, "models/isolation_forest.joblib")
+print("\nSaved model to models/isolation_forest.joblib")
