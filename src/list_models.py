@@ -1,0 +1,10 @@
+import os 
+
+from dotenv import load_dotenv
+from groq import Groq
+
+load_dotenv() 
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+for model in client.models.list().data:
+    print(f"{model.name} ({model.id})")
