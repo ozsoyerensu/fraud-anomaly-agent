@@ -1,35 +1,59 @@
-import json 
+import json
 import os
 
 from dotenv import load_dotenv
-from groq import Groq 
+from groq import Groq, BadRequestError
 
 from case import Case, load_scored_test_set, build_cases
+from tools import TOOLS, get_account_activity
 
-load_dotenv() # load environment variables from .env file
+load_dotenv()  # load environment variables from .env file
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-MODEL = "openai/gpt-oss-120b" # the model we will use for investigation
+MODEL = "openai/gpt-oss-120b"  # the model we will use for investigation
 
-SYSTEM_PROMPT = """You are a fraud investigation analyst at a bank. You will be given details of a single " \
-"\nflagged transaction that an automated anomaly-detection system has identified as potentially fraudulent.\
-\nYour job is to assess how suspicious the transaction is, and to provide a detailed explanation of your reasoning. Only call get_account_activity when you need account history — never call any other
-tool. When you are ready to give your final verdict, write the JSON object directly
-as your plain text response. Do not attempt to call a tool to produce your answer."
+SYSTEM_PROMPT = """You are a fraud investigation analyst at a bank. You will be given details of a single flagged transaction that an automated anomaly-detection system has identified as potentially fraudulent.
+Your job is to assess how suspicious the transaction is, and to provide a detailed explanation of your reasoning. Only call get_account_activity when you need account history — never call any other tool. When you are ready to give your final verdict, write the JSON object directly as your plain text response. Do not attempt to call a tool to produce your answer.
 
 Respond with a JSON object with exactly the following fields:
--"risk_level": one of "low", "medium", or "high"
--"recommended_action": one of "clear", "hold_for_review", or "escalate"
--"explanation": a short (2-4 sentence) explanation of your reasoning, written in plain English. Avoid technical jargon.
+- "risk_level": one of "low", "medium", or "high"
+- "recommended_action": one of "clear", "hold_for_review", or "escalate"
+- "explanation": a short (2-4 sentence) explanation of your reasoning, written in plain English. Avoid technical jargon.
 
-Base your reasoning only on the reasoning only on the transaction details provided. Do not assume information \ 
-\nyou were not given."""
-
-from tools import TOOLS, get_account_activity
+Base your reasoning only on the transaction details provided. Do not assume information you were not given."""
 
 AVAILABLE_TOOLS = {"get_account_activity": get_account_activity}
-MAX_TOOLS_PER_INVESTIGATION = 5 # limit the number of tools the agent can call per investigation
+MAX_TOOLS_PER_INVESTIGATION = 5  # limit the number of tools the agent can call per investigation
+
+
+def _recover_from_fake_tool_call(error: BadRequestError):
+    """
+    Groq sometimes has the model hallucinate a call to a nonexistent tool ("json" or "JSON") instead of
+    returning its final answer as plain text. The API rejects the tool call with a 400 error - but the error
+    body's 'failed_generation' field still contains the model's intended answer, embedded as the fake tool
+    call's arguments. Rather than treating this as a hard failure, extract the answer directly.
+
+    Returns the recovered verdict dict, or None if this wasn't that specific quirk (caller should treat it
+    as a real error).
+    """
+    body = getattr(error, "body", None) or {}
+    failed_generation = body.get("error", {}).get("failed_generation")
+    if not failed_generation:
+        return None
+
+    try:
+        parsed = json.loads(failed_generation)
+        arguments = parsed.get("arguments")
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments)
+        if isinstance(arguments, dict) and "risk_level" in arguments:
+            return arguments
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+
+    return None
+
 
 def invetigate(case: Case) -> dict:
     """Send a case to the agent, letting it call tools before returning a verdict."""
@@ -42,13 +66,17 @@ def invetigate(case: Case) -> dict:
     ]
 
     for _ in range(MAX_TOOLS_PER_INVESTIGATION):
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=TOOLS,
-            tool_choice="auto",
-            temperature=0.2,
-        )
+        try:
+            response = client.chat.completions.create(
+                model=MODEL, messages=messages, tools=TOOLS,
+                tool_choice="auto", temperature=0.2,
+            )
+        except BadRequestError as e:
+            recovered = _recover_from_fake_tool_call(e)
+            if recovered is not None:
+                return recovered
+            raise
+
         message = response.choices[0].message
 
         if not message.tool_calls:
@@ -86,6 +114,7 @@ def invetigate(case: Case) -> dict:
             })
 
     raise RuntimeError("Agent didn't reach a final answer within the tool-call limit")
+
 
 if __name__ == "__main__":
     test_df = load_scored_test_set()

@@ -34,3 +34,12 @@ the resilience a real system needs regardless of which specific quirk causes a f
 **Possible future improvement:** an automatic one-time retry when this specific error
 is detected — `failed_generation` in the error response usually contains the model's
 actual intended answer, just packaged wrong, so a retry would likely succeed.
+
+## (9-Sep-2026) Recover from hallucinated "json" tool call instead of dropping the case (src/agent.py)
+**Finding:** Running 'src/pipeline.py' over the top 15 anomaly-score cases, 4 of 15 hit the tool-hallucination quirk: the model calls a nonexisten tool named "json" or "JSON" instead of returning its verdict as plain text. Critically, the ONE actual fraud case in this batch (#2736011) was one of the 4 that failed. It was marked ERROR and silently excluded from the "flagged HIGH" count instead of being scored at all. At a 27% failure rate, catching-and-skipping is no longer an acceptable trade-off. It's hiding results including true positive results. 
+
+**Why this happens:** Groq's 400 error body includes a 'failed_generation' field that already contains the models'real, well-formed answer. It just wrapped it as fake tool-call arguments instead of returning it as plain text. 
+
+**Decision:** instead of blindly retrying (resending the same prompt at the cost of anoter API call) extract the verdict directly from the 'failed_generation' in a new '_recover_from_fake_tool_call()' helper in src/agent.py. This is free (no extra API call), deterministic, and reuses an answer the model already got right in substance. If extraction fails, or the error isn't this specific quirk, we still reraise, so pipeline.py existing try/except remains the fallback of last resort. 
+
+**Result:** Reran the pipeline after fix. All 15 cases now produce a real verdict. Zero ERROR rows, versus 4/15 before. The one true fraud case (#2736011) in this batch is correctly recovered and correctly flagged "high" risk. Precision at HIGH-risk flags is now measurable at 1/15 = 6.67% (previously undefined).Every one of the 15 cases was flagged "high," meaning the agent shows no discrimination within this specific slice. That's expected given how narrow and repetitive the top-15 sample is (dominated by near-identical ~$10M transfers) — a small-sample / class-imbalance nuance.
